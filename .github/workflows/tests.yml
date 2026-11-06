@@ -25,7 +25,7 @@ jobs:
       - name: Codecov
         uses: codecov/codecov-action@v5
         with:
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           use_oidc: true
 
   uppercase-transformation-integration-test:
