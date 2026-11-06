@@ -1,0 +1,52 @@
+name: Start tinyproxy
+description: Installs and starts a local HTTP proxy that logs every CONNECT request, for the http-proxy integration tests
+inputs:
+  port:
+    description: Port the proxy listens on (127.0.0.1 only)
+    required: false
+    default: '9999'
+  extra-config:
+    description: Additional tinyproxy configuration directives, one per line
+    required: false
+    default: ''
+outputs:
+  log-file:
+    description: Path of the proxy log. Every tunneled request appears as a "CONNECT host:port" line.
+    value: ${{ steps.start.outputs.log-file }}
+runs:
+  using: composite
+  steps:
+    - name: Install tinyproxy
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq tinyproxy
+        # The package starts a system-wide instance with its own configuration; this test uses its own instance
+        sudo systemctl stop tinyproxy 2>/dev/null || true
+      shell: bash
+    - name: Start tinyproxy
+      id: start
+      run: |
+        LOG_FILE="$RUNNER_TEMP/tinyproxy.log"
+        CONF_FILE="$RUNNER_TEMP/tinyproxy.conf"
+        cat > "$CONF_FILE" <<EOF
+        Port ${{ inputs.port }}
+        Listen 127.0.0.1
+        Allow 127.0.0.1
+        Timeout 600
+        LogLevel Connect
+        LogFile "$LOG_FILE"
+        ${{ inputs.extra-config }}
+        EOF
+        tinyproxy -c "$CONF_FILE"
+        for i in $(seq 1 10); do
+          if (echo > /dev/tcp/127.0.0.1/${{ inputs.port }}) 2>/dev/null; then
+            echo "tinyproxy is listening on 127.0.0.1:${{ inputs.port }}"
+            echo "log-file=$LOG_FILE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "tinyproxy did not start"
+        cat "$LOG_FILE" 2>/dev/null || true
+        exit 1
+      shell: bash

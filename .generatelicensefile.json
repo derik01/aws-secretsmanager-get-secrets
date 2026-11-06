@@ -1,0 +1,7 @@
+{
+  "inputs": ["./package.json"],
+  "output": "./dist/licenses.txt",
+  "overwrite": true,
+  "ci": true,
+  "append": ["./node_modules/@vercel/ncc/LICENSE"]
+}

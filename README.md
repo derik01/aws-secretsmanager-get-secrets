@@ -35,6 +35,8 @@ To use the action, add a step to your workflow that uses the following syntax.
     name-transformation: (Optional) uppercase|lowercase|none
     parse-json-secrets: (Optional) true|false
     auto-select-family-attempt-timeout: (Optional) positive integer
+    http-proxy: (Optional) proxy URL
+    no-proxy: (Optional) comma-separated hosts
 ```
 Parameters
 
@@ -65,6 +67,44 @@ Note that if the JSON uses case-sensitive keys such as "name" and "Name", the ac
 (Optional - default 1000) Specifies the timeout (in milliseconds) for attempting to connect to the first IP address in a dual-stack DNS lookup. This setting is crucial especially when GitHub Action workers are geographically distant from the target region where the secrets are stored. The timeout must be greater than ot equal to 10 ms
 
 Set `auto-select-family-attempt-timeout` to any positive integer that is greater than or equal to 10 ms to set the timeout between each call to that value in milliseconds. 
+
+- `http-proxy`
+
+(Optional) An HTTP or HTTPS proxy to send the Secrets Manager API calls through, for example `http://proxy.example.com:3128`. Use this on self-hosted runners that can only reach the internet through a corporate proxy. If the input is not set, the action reads the standard proxy environment variables `https_proxy`, `HTTPS_PROXY`, `http_proxy`, and `HTTP_PROXY`, in that order. See [Use an HTTP proxy](#use-an-http-proxy).
+
+- `no-proxy`
+
+(Optional) A comma-separated list of hosts to connect to directly instead of through the proxy, for example `.amazonaws.com`. If the input is not set, the action reads the `no_proxy` or `NO_PROXY` environment variable. Only used when a proxy is configured.
+
+### Use an HTTP proxy
+
+When a proxy is configured, the action opens an HTTP `CONNECT` tunnel to `secretsmanager.<region>.amazonaws.com:443` through the proxy. The TLS connection to Secrets Manager runs inside the tunnel, so the proxy sees the host name and the amount of data transferred but not the secret values, unless it is a TLS-inspecting proxy that your organization has configured you to trust.
+
+The action takes the proxy from the first of these that is set: the `http-proxy` input, then `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`. Hosts to bypass come from the `no-proxy` input, then `no_proxy`, `NO_PROXY`. Entries in the list can be an exact host name, a suffix starting with `.` or `*` (for example `.amazonaws.com`), or `*` to bypass the proxy for every host, each optionally followed by `:port`.
+
+Only `http://` and `https://` proxy URLs are supported. If the proxy URL includes credentials (`http://user:password@proxy.example.com:3128`), the action masks the URL and the credentials in the job log. A configured proxy is never bypassed: if the proxy is invalid, unreachable, or rejects the connection, the action fails instead of connecting directly.
+
+If your proxy inspects TLS traffic using a private certificate authority, point Node.js at the CA bundle with the [`NODE_EXTRA_CA_CERTS`](https://nodejs.org/api/cli.html#node_extra_ca_certsfile) environment variable on the runner. The action does not disable certificate validation.
+
+Proxy configured with the input:
+
+```
+- name: Get secrets through a proxy
+  uses: aws-actions/aws-secretsmanager-get-secrets@v3
+  with:
+    secret-ids: exampleSecretName
+    http-proxy: http://proxy.example.com:3128
+    no-proxy: localhost,127.0.0.1
+```
+
+Proxy configured in the runner's environment:
+
+```
+HTTPS_PROXY=http://proxy.example.com:3128
+NO_PROXY=localhost,127.0.0.1
+```
+
+The `configure-aws-credentials` step that runs before this action accepts the same `http-proxy` and `no-proxy` inputs.
 ### Environment variable naming
 
 The environment variables created by the action are named the same as the secrets they come from. Environment variables have stricter naming requirements than secrets, so the action transforms secret names to meet those requirements. For example, the action transforms lowercase letters to uppercase letters. If you parse the JSON of the secret, then the environment variable name includes both the secret name and the JSON key name, for example `MYSECRET_KEYNAME`.
@@ -218,6 +258,24 @@ Environment variables created:
 ```
 TEST_SECRET: secretValue1
 PROD_SECRET: secretValue2
+```
+
+**Example 6 Retrieve secrets through an HTTP proxy**
+The following example sends the Secrets Manager API calls through a corporate proxy, bypassing it for hosts on the local network.
+
+```
+- name: Get secrets through a proxy
+  uses: aws-actions/aws-secretsmanager-get-secrets@v3
+  with:
+    secret-ids: exampleSecretName
+    http-proxy: http://proxy.example.com:3128
+    no-proxy: localhost,127.0.0.1,.internal.example.com
+```
+
+Environment variable created:
+
+```
+EXAMPLESECRETNAME: secretValue
 ```
 
 ## Security

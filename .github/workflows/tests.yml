@@ -151,3 +151,143 @@ jobs:
           auto-select-family-attempt-timeout: "2000"
       - name: Assert
         run: npm run integration-test __integration_tests__/parse_json_secrets.test.ts
+
+  # The http-proxy jobs run the action against a local tinyproxy that logs every CONNECT request. Together they
+  # show that a configured proxy is always used, that no-proxy is honored, and that the action fails rather than
+  # connecting directly when the proxy is unreachable or refuses the destination.
+  http-proxy-input-integration-test:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build
+        uses: ./.github/actions/build
+      - name: Start proxy
+        id: proxy
+        uses: ./.github/actions/tinyproxy
+      - name: Act
+        uses: ./
+        with:
+          secret-ids: JsonSecret
+          http-proxy: http://127.0.0.1:9999
+      - name: Assert the secret was retrieved
+        run: npm run integration-test __integration_tests__/parse_json_secrets.test.ts
+      - name: Assert the request went through the proxy
+        run: |
+          cat "${{ steps.proxy.outputs.log-file }}"
+          grep -q "CONNECT secretsmanager.us-east-1.amazonaws.com:443" "${{ steps.proxy.outputs.log-file }}"
+
+  http-proxy-env-integration-test:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build
+        uses: ./.github/actions/build
+      - name: Start proxy
+        id: proxy
+        uses: ./.github/actions/tinyproxy
+      - name: Act
+        uses: ./
+        env:
+          HTTPS_PROXY: http://127.0.0.1:9999
+        with:
+          secret-ids: JsonSecret
+      - name: Assert the secret was retrieved
+        run: npm run integration-test __integration_tests__/parse_json_secrets.test.ts
+      - name: Assert the request went through the proxy
+        run: |
+          cat "${{ steps.proxy.outputs.log-file }}"
+          grep -q "CONNECT secretsmanager.us-east-1.amazonaws.com:443" "${{ steps.proxy.outputs.log-file }}"
+
+  http-proxy-no-proxy-integration-test:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build
+        uses: ./.github/actions/build
+      - name: Start proxy
+        id: proxy
+        uses: ./.github/actions/tinyproxy
+      - name: Act
+        uses: ./
+        with:
+          secret-ids: JsonSecret
+          http-proxy: http://127.0.0.1:9999
+          no-proxy: .amazonaws.com
+      - name: Assert the secret was retrieved
+        run: npm run integration-test __integration_tests__/parse_json_secrets.test.ts
+      - name: Assert the proxy was bypassed
+        run: |
+          cat "${{ steps.proxy.outputs.log-file }}"
+          if grep -q "secretsmanager" "${{ steps.proxy.outputs.log-file }}"; then
+            echo "The request was sent through the proxy although the endpoint matches no-proxy"
+            exit 1
+          fi
+
+  http-proxy-unreachable-integration-test:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build
+        uses: ./.github/actions/build
+      - name: Act
+        id: act
+        uses: ./
+        continue-on-error: true
+        with:
+          secret-ids: JsonSecret
+          # Nothing listens on this port
+          http-proxy: http://127.0.0.1:9
+      - name: Assert the action failed instead of connecting directly
+        run: |
+          if [ "${{ steps.act.outcome }}" != "failure" ]; then
+            echo "The action succeeded although the configured proxy is unreachable"
+            exit 1
+          fi
+          if [ -n "${JSONSECRET:-}" ]; then
+            echo "The secret was retrieved although the configured proxy is unreachable"
+            exit 1
+          fi
+
+  http-proxy-denied-integration-test:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build
+        uses: ./.github/actions/build
+      - name: Start proxy that refuses tunnels
+        id: proxy
+        uses: ./.github/actions/tinyproxy
+        with:
+          # "To disable the CONNECT method altogether, set the value to 0" (tinyproxy.conf(5)). The proxy
+          # answers every tunnel request, including the one to Secrets Manager, with 403 Access violation.
+          extra-config: ConnectPort 0
+      - name: Act
+        id: act
+        uses: ./
+        continue-on-error: true
+        with:
+          secret-ids: JsonSecret
+          http-proxy: http://127.0.0.1:9999
+      - name: Assert the action failed after the proxy refused the destination
+        run: |
+          cat "${{ steps.proxy.outputs.log-file }}"
+          if [ "${{ steps.act.outcome }}" != "failure" ]; then
+            echo "The action succeeded although the proxy refuses CONNECT requests"
+            exit 1
+          fi
+          if [ -n "${JSONSECRET:-}" ]; then
+            echo "The secret was retrieved although the proxy refuses CONNECT requests"
+            exit 1
+          fi
+          # The attempt reached the proxy, so the failure was the proxy's decision and not a direct connection
+          grep -q "CONNECT secretsmanager.us-east-1.amazonaws.com:443" "${{ steps.proxy.outputs.log-file }}"

@@ -11,8 +11,20 @@ import {
     parseTransformationFunction
 } from "./utils";
 import { CLEANUP_NAME, getUserAgent } from "./constants";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import {
+    ProxySettings,
+    resolveProxySettings,
+    validateProxyUrl,
+    maskProxySecrets,
+    buildProxyRequestHandler,
+    proxyErrorHint
+} from "./proxy";
 
 export async function run(): Promise<void> {
+    // Declared outside the try block so the catch blocks can use it
+    let proxy: ProxySettings | undefined = undefined;
+
     try {
         // Node 20 introduced automatic family selection for dual-stack endpoints. When the runner 
         // sits far away from the secrets manager endpoint it sometimes timeouts on negotiation between
@@ -28,11 +40,24 @@ export async function run(): Promise<void> {
         } 
 
         setDefaultAutoSelectFamilyAttemptTimeout(timeout);
-        
 
+        // Send API calls through an HTTP proxy when the 'http-proxy' input or the proxy environment
+        // variables set one. An invalid or unreachable proxy fails the action.
+        proxy = resolveProxySettings(core.getInput('http-proxy'), core.getInput('no-proxy'));
+        let requestHandler: NodeHttpHandler | undefined = undefined;
+        if (proxy) {
+            const proxyUrl = validateProxyUrl(proxy.proxyUrl);
+            maskProxySecrets(proxy.proxyUrl, proxyUrl);
+            requestHandler = buildProxyRequestHandler(proxy);
+            core.info(`Using the HTTP proxy configured by ${proxy.source} for Secrets Manager API calls.`);
+        }
 
         // Default client region is set by configure-aws-credentials
-        const client : SecretsManagerClient = new SecretsManagerClient({region: process.env.AWS_DEFAULT_REGION, customUserAgent: getUserAgent()});
+        const client : SecretsManagerClient = new SecretsManagerClient({
+            region: process.env.AWS_DEFAULT_REGION,
+            customUserAgent: getUserAgent(),
+            ...(requestHandler && { requestHandler })
+        });
         const secretConfigInputs: string[] = [...new Set(core.getMultilineInput('secret-ids'))];
         const parseJsonSecrets = core.getBooleanInput('parse-json-secrets');
         const nameTransformation = parseTransformationFunction(core.getInput('name-transformation'));
@@ -72,7 +97,7 @@ export async function run(): Promise<void> {
                 secretsToCleanup = [...secretsToCleanup, ...injectedSecrets];
             } catch (err) {
                 // Fail action for any error
-                core.setFailed(`Failed to fetch secret: '${secretId}'. Error: ${err}.`)
+                core.setFailed(`Failed to fetch secret: '${secretId}'. Error: ${err}.${proxyErrorHint(err, proxy)}`)
             } 
         }
 
@@ -87,7 +112,7 @@ export async function run(): Promise<void> {
 
         core.info("Completed adding secrets.");
     } catch (error) {
-        if (error instanceof Error) core.setFailed(error.message)
+        if (error instanceof Error) core.setFailed(`${error.message}${proxyErrorHint(error, proxy)}`)
     }
 }
 
